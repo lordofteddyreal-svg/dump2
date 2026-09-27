@@ -212,7 +212,7 @@ if ($login -and $pass) {
 
 # ---------- 3. dynamic run ----------
 Log "=== DYNAMIC RUN ($RunSeconds s) ==="
-$roots = @($env:APPDATA, $env:LOCALAPPDATA, $env:TEMP, $env:USERPROFILE, (Get-Location).Path)
+$roots = @($env:APPDATA, $env:LOCALAPPDATA, $env:TEMP, $env:USERPROFILE, (Get-Location).Path, $WorkDir, $OutDir, "C:\ProgramData")
 $mc = Join-Path $env:APPDATA ".minecraft"
 if (Test-Path $mc) { $roots += $mc }
 $before = Snapshot-Files $roots
@@ -224,19 +224,38 @@ try { $tcpBefore = Get-NetTCPConnection -ErrorAction Stop | Where-Object { $_.St
 $tcpBefore | Out-String | Out-File "$OutDir\tcp-before.txt"
 
 $proc = $null
+$runLog = New-Object System.Text.StringBuilder
 if (Test-Path $launcher) {
   try {
     # лаунчер GUI + требует логин: запускаем без ключей, GUI может висеть - это ок, нам нужны файлы/память/сеть
     $proc = Start-Process -FilePath $launcher -WorkingDirectory $WorkDir -PassThru -ErrorAction Stop
+    [void]$runLog.AppendLine("started pid=$($proc.Id) at $(Get-Date -Format o)")
     Log "started pid=$($proc.Id)"
-    Start-Sleep -Seconds $RunSeconds
+    # быстрая проверка: жив ли через 5 сек, сразу снимаем процессы/сеть (иначе GUI на headless-раннере дохнет мгновенно)
+    Start-Sleep -Seconds 5
+    try {
+      $p = Get-Process -Id $proc.Id -ErrorAction Stop
+      [void]$runLog.AppendLine("alive after 5s: $($p.ProcessName) responding=$($p.Responding)")
+      Log "alive after 5s: $($p.ProcessName)"
+      Get-Process -Id $proc.Id | Out-String | Out-File "$OutDir\launcher-proc-early.txt"
+    } catch {
+      [void]$runLog.AppendLine("EXITED within 5s (headless/GUI/login-required?). ExitCode check via WMI:")
+      try {
+        $w = Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" -ErrorAction Stop
+        [void]$runLog.AppendLine("still in WMI: $($w.CommandLine)")
+      } catch { [void]$runLog.AppendLine("not in WMI either -> процесс сразу завершился") }
+      Log "process already exited within 5s"
+    }
+    Start-Sleep -Seconds ([Math]::Max(0, $RunSeconds - 5))
     try {
       $p = Get-Process -Id $proc.Id -ErrorAction Stop
       Log "still running, capturing memory..."
     } catch { Log "process already exited" }
   } catch {
+    [void]$runLog.AppendLine("Start-Process FAILED: $($_.Exception.Message)")
     Log "Start-Process failed: $($_.Exception.Message)"
   }
+  Save-Text "$OutDir\run.log" $runLog.ToString()
 }
 
 # TCP after
@@ -246,6 +265,12 @@ try {
   Log "tcp snapshot saved"
 } catch { Log "tcp capture failed" }
 try { Get-Process | Sort-Object ProcessName | Out-String | Out-File "$OutDir\processes.txt" } catch {}
+try {
+  Get-WinEvent -LogName Application -MaxEvents 50 -ErrorAction Stop |
+    Where-Object { $_.Message -match "spacelauncher|adl_launcher|Visual C\+\+|VCRUNTIME|\.NET|SideBySide" } |
+    Format-List TimeCreated, ProviderName, Id, Message | Out-String | Out-File "$OutDir\eventlog-app.txt"
+  Log "eventlog saved"
+} catch { Log "eventlog read failed: $($_.Exception.Message)" }
 
 # screenshots of new files
 Start-Sleep -Seconds 2
