@@ -1,0 +1,54 @@
+name: spacedlc-dump
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_seconds:
+        description: "Сколько секунд держать лаунчер запущенным"
+        required: false
+        default: "60"
+      beta:
+        description: "Запрашивать beta-моды (/frontend/files/mods?beta=true)"
+        required: false
+        default: "false"
+
+jobs:
+  dump:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show workspace
+        shell: pwsh
+        run: |
+          Get-ChildItem
+          Write-Host "---"
+          if (Test-Path .\dump.ps1) { Write-Host "dump.ps1 found" } else { Write-Host "dump.ps1 MISSING" }
+
+      - name: Run SpaceDLC dump
+        shell: pwsh
+        env:
+          SPACEDLC_LOGIN: ${{ secrets.SPACEDLC_LOGIN }}
+          SPACEDLC_PASSWORD: ${{ secrets.SPACEDLC_PASSWORD }}
+        run: |
+          $beta = "${{ inputs.beta }}" -eq "true"
+          $extra = @()
+          if ($beta) { $extra += "-Beta" }
+          powershell -ExecutionPolicy Bypass -File .\dump.ps1 -RunSeconds ${{ inputs.run_seconds }} @extra
+
+      - name: List output
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path C:\dump\out) { Get-ChildItem C:\dump\out -Recurse | Format-Table FullName, Length -AutoSize | Out-String | Write-Host }
+          else { Write-Host "no C:\dump\out" }
+
+      - name: Upload dump artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spacedlc-dump
+          path: C:\dump\out
+          if-no-files-found: warn
